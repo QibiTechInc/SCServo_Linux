@@ -45,10 +45,11 @@ public:
         joint_pub_ = this->create_publisher<sensor_msgs::msg::JointState>("feetech/joint_states", 10);
         temp_pub_ = this->create_publisher<sensor_msgs::msg::Temperature>("feetech/temperature", 10);
         volt_pub_ = this->create_publisher<std_msgs::msg::Float32>("feetech/voltage", 10);
+        current_pub_ = this->create_publisher<std_msgs::msg::Int32>("feetech/current", 10);
 
         // 5. Initialize Subscriber (Position Control)
         // Topic expects a raw integer (0-4095)
-        cmd_sub_ = this->create_subscription<std_msgs::msg::Int32>(
+        cmd_sub_ = this->create_subscription<std_msgs::msg::Float32>(
             "feetech/cmd_pos", 
             10, 
             std::bind(&FeetechDriverNode::command_callback, this, std::placeholders::_1)
@@ -78,15 +79,19 @@ private:
     // ROS Handles
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_pub_;
     rclcpp::Publisher<sensor_msgs::msg::Temperature>::SharedPtr temp_pub_;
+    rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr current_pub_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr volt_pub_;
-    rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr cmd_sub_;
+    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr cmd_sub_;
     rclcpp::TimerBase::SharedPtr timer_;
 
     // --- Command Callback ---
-    void command_callback(const std_msgs::msg::Int32::SharedPtr msg)
+    void command_callback(const std_msgs::msg::Float32::SharedPtr msg)
     {
         // Clamp values to safe STS range (0 - 4095)
-        int target_pos = std::max(0, std::min(4095, msg->data));
+
+        int steps = static_cast<int>(msg->data*4095.0/(2 * M_PI));
+
+        int target_pos = std::max(0, std::min(4095, steps));
         
         // Write Position using parameters for speed/accel
         sm_st_.WritePosEx(servo_id_, target_pos, speed_, accel_);
@@ -108,17 +113,28 @@ private:
             int load = sm_st_.ReadLoad(-1);
             int voltage = sm_st_.ReadVoltage(-1);
             int temper = sm_st_.ReadTemper(-1);
-            // int current = sm_st_.ReadCurrent(-1); // Optional
+            int current = sm_st_.ReadCurrent(-1); // Optional
+
+            // torque is max 30kg cm = 2.94 Nm. rated torque is 10kgcm
+
+            
 
             // 2. Publish JointState
             auto joint_msg = sensor_msgs::msg::JointState();
             joint_msg.header.stamp = this->now();
             joint_msg.name.push_back("servo_" + std::to_string(servo_id_));
             
+
+            float pos_turn = static_cast<float>(pos)/4095.0;
+            float speed_turn = static_cast<float>(speed)/4095.0; 
+            float pos_rad = pos_turn * 2 * M_PI;
+            float speed_rad = speed_turn * 2 * M_PI;
+            float load_nm = static_cast<float>(load* 2.94)/1000.0;
+
             // Note: STS3125 Raw Units. You might want to convert to Rad/s later.
-            joint_msg.position.push_back(pos); 
-            joint_msg.velocity.push_back(speed);
-            joint_msg.effort.push_back(load); 
+            joint_msg.position.push_back(pos_rad); 
+            joint_msg.velocity.push_back(speed_rad);
+            joint_msg.effort.push_back(load_nm); 
             
             joint_pub_->publish(joint_msg);
 
@@ -128,6 +144,10 @@ private:
             volt_msg.data = voltage / 10.0f; 
             volt_pub_->publish(volt_msg);
 
+
+            auto current_msg = std_msgs::msg::Int32();
+            current_msg.data = current;
+            current_pub_->publish(current_msg);
             // 4. Publish Temperature
             auto temp_msg = sensor_msgs::msg::Temperature();
             temp_msg.header.stamp = this->now();
